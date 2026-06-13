@@ -2,9 +2,16 @@
 
 ## 1. Architecture Style
 
-**Layered Monolith with async workers (v1) → Microservices on AWS (v2)**
+**Layered Monolith with scheduled workers (v1) → Services on AWS (v2)**
 
-In v1, all backend components run in a single Python process space using an async task scheduler. This keeps local deployment simple (one `docker-compose up`) while keeping the internal boundaries clean enough to extract into separate services for AWS deployment.
+In v1, all backend components run within a single Spring Boot application using Spring's built-in `@Scheduled` task execution. This keeps local deployment simple (`docker-compose up`) while enforcing clean internal boundaries — Controller → Service → Repository — that map naturally to separate AWS services in v2.
+
+The architecture follows **Clean Architecture**:
+- No business logic in controllers
+- Constructor injection only (`@RequiredArgsConstructor`)
+- Entities never returned directly from controllers (DTO pattern)
+- UUID primary keys on all entities
+- Global exception handling via `@ControllerAdvice`
 
 ---
 
@@ -15,8 +22,8 @@ In v1, all backend components run in a single Python process space using an asyn
 │                        USER'S MACHINE (v1)                   │
 │                                                              │
 │  ┌──────────────┐     ┌──────────────────────────────────┐  │
-│  │  React UI    │────▶│         FastAPI Backend           │  │
-│  │  (Vite/TS)   │◀────│  /api/articles  /api/digest       │  │
+│  │  React UI    │────▶│      Spring Boot Backend          │  │
+│  │  (Vite/TS)   │◀────│  /api/news  /api/digest           │  │
 │  └──────────────┘     └────────┬─────────────────────────┘  │
 │                                │                             │
 │              ┌─────────────────┼─────────────────┐          │
@@ -24,19 +31,19 @@ In v1, all backend components run in a single Python process space using an asyn
 │              ▼                 ▼                 ▼           │
 │  ┌──────────────────┐ ┌──────────────┐ ┌──────────────────┐ │
 │  │  GDELT Collector │ │  AI Processor│ │  Digest Generator│ │
-│  │  (APScheduler)   │ │  (APScheduler│ │  (APScheduler)   │ │
+│  │  (@Scheduled)    │ │  (@Scheduled)│ │  (@Scheduled)    │ │
 │  └────────┬─────────┘ └──────┬───────┘ └────────┬─────────┘ │
 │           │                  │                  │            │
 │           ▼                  ▼                  │            │
 │  ┌──────────────────────────────────────────┐   │           │
 │  │           PostgreSQL Database             │◀──┘           │
-│  │  articles | summaries | digests | logs   │               │
+│  │  articles | summaries | daily_digests    │               │
 │  └──────────────────────────────────────────┘               │
 │                             │                               │
 │                             ▼                               │
 │                   ┌──────────────────┐                      │
 │                   │   Ollama (local) │                      │
-│                   │   llama3 / mistral│                     │
+│                   │   Llama 3.1      │                      │
 │                   └──────────────────┘                      │
 └─────────────────────────────────────────────────────────────┘
          │ GDELT 2.0 HTTP endpoint (external, read-only)
@@ -46,210 +53,252 @@ In v1, all backend components run in a single Python process space using an asyn
 
 ---
 
-## 3. Component Breakdown
-
-### 3.1 GDELT Collector
-
-- **Responsibility:** Polls the GDELT 2.0 API every 15 minutes, parses event CSV/JSON, deduplicates by URL, and writes raw records to `articles` table with status `pending`.
-- **Technology:** Python, `httpx` for async HTTP, `pandas` for CSV parsing.
-- **Trigger:** APScheduler cron job (interval-based, configurable).
-- **Output:** Rows in `articles` with `status = 'pending'`.
-
-**Why GDELT 2.0:** It updates every 15 minutes, is free, machine-readable, and includes tone scores, geographic tags, and source metadata — exactly the signals needed for ranking.
-
----
-
-### 3.2 AI Processor
-
-- **Responsibility:** Picks up `pending` articles, calls Ollama for summarization and categorization, writes results back, updates status to `processed`.
-- **Technology:** Python, `httpx` to call Ollama REST API (`POST /api/generate`).
-- **Trigger:** APScheduler job running every 2 minutes, processes up to N articles per cycle (configurable, default: 10).
-- **Concurrency:** Sequential within a cycle to avoid overwhelming Ollama on CPU-bound hardware. Can be made concurrent once GPU is available.
-- **Prompt pattern:** Single prompt requests both summary and category JSON in one call to minimize LLM round-trips.
-
-**Why Ollama:** Runs entirely offline, supports swappable models (Llama 3.2, Mistral, Gemma), and exposes a simple REST API identical in shape to what we'd call on AWS Bedrock — making future migration straightforward.
-
----
-
-### 3.3 Ranking Engine
-
-- **Responsibility:** Computes a composite `rank_score` for each article.
-- **Location:** Runs as part of the AI Processor step (post-summarization) and is re-run on each ingestion cycle for recency decay.
-- **Scoring formula (v1):**
+## 3. Package Structure
 
 ```
-rank_score = (0.4 × normalized_gdelt_tone)
-           + (0.4 × recency_decay)
-           + (0.2 × source_diversity_bonus)
-
-recency_decay = e^(-λ × hours_since_published)   # λ = 0.1
+com.mesgan.ainews
+├── controller      # REST controllers — routing and request/response only
+├── service         # Business logic — all processing lives here
+├── repository      # Spring Data JPA repositories
+├── entity          # JPA entities (mapped to DB tables)
+├── dto             # Request and response DTOs (never expose entities)
+├── mapper          # Entity ↔ DTO conversion
+├── client          # External HTTP clients (GDELT, Ollama)
+├── scheduler       # @Scheduled job classes
+├── config          # Spring configuration classes
+└── exception       # GlobalExceptionHandler + custom exceptions
 ```
 
-**Why this formula:** Tone and recency are the two signals most correlated with "importance" in GDELT research. Source diversity prevents one outlet from dominating the feed.
+---
+
+## 4. Component Breakdown
+
+### 4.1 GDELT Collector
+
+- **Responsibility:** Polls the GDELT 2.0 API every 15 minutes, parses event CSV, deduplicates by URL, and persists new records to the `articles` table with `processed = false`.
+- **Technology:** Java, Spring `@Scheduled`, `WebClient` for HTTP, manual CSV parsing.
+- **Location:** `scheduler/GdeltCollectorScheduler.java` → `service/NewsIngestionService.java` → `client/GdeltClient.java`
+- **Output:** `Article` rows with `processed = false`.
+
+**Why GDELT 2.0:** Free, no API key, updates every 15 minutes, includes tone scores, geographic tags, and source metadata — exactly the signals needed for importance scoring.
 
 ---
 
-### 3.4 Digest Generator
+### 4.2 AI Processor
 
-- **Responsibility:** Once per day, selects the top N scored articles from the past 24 hours, calls Ollama to write a cohesive narrative digest, stores it in the `digests` table.
-- **Trigger:** APScheduler cron job at 07:00 local time (configurable).
-- **Technology:** Same Python/Ollama stack as AI Processor.
+- **Responsibility:** Picks up unprocessed articles (`processed = false`), calls Ollama for summarization, categorization, and importance scoring, writes a `Summary` record, marks the article `processed = true`.
+- **Technology:** Java, `WebClient` to call Ollama REST API (`POST /api/generate`), Jackson for JSON parsing.
+- **Location:** `scheduler/AiProcessorScheduler.java` → `service/SummaryService.java` → `client/OllamaClient.java`
+- **Trigger:** `@Scheduled` every 2 minutes, processes up to N articles per cycle (configurable).
+- **Prompt output (JSON):** `oneSentenceSummary`, `keyPoints`, `whyItMatters`, `aiCategory`, `importanceScore`
+
+**Why Ollama:** Runs entirely offline, model-agnostic, exposes a simple REST API. Llama 3.1 is the default; the model name is configurable via environment variable. Future: swap for Claude API or OpenAI API without changing service logic.
 
 ---
 
-### 3.5 FastAPI Backend
+### 4.3 Ranking / Importance Scoring
+
+- **Responsibility:** Assigns an `importanceScore` (1–100) to each article as part of the AI prompt response.
+- **Location:** `service/SummaryService.java` (parsed from Ollama response, stored on `Article` entity).
+- **Note:** Score is AI-generated, not formula-based. The LLM reasons about geopolitical significance, novelty, and impact to produce the score. This is revisable in future sprints.
+
+---
+
+### 4.4 Digest Generator
+
+- **Responsibility:** Once per day, selects the top-scored articles from the past 24 hours grouped by category, calls Ollama to write a cohesive narrative digest, stores it in `daily_digests`.
+- **Location:** `scheduler/DigestScheduler.java` → `service/DigestService.java` → `client/OllamaClient.java`
+- **Trigger:** `@Scheduled` cron at 07:00 local time (configurable).
+
+---
+
+### 4.5 Spring Boot REST API
 
 - **Responsibility:** Exposes REST endpoints consumed by the React dashboard.
-- **Technology:** Python, FastAPI, SQLAlchemy (async), Pydantic v2 for schemas.
+- **Technology:** Java 21, Spring Boot 3, Spring Web, Spring Data JPA, Bean Validation, Lombok.
 - **Key endpoints:**
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/articles` | Paginated, filterable article list |
-| GET | `/api/articles/{id}` | Single article with full summary |
-| GET | `/api/digest/latest` | Most recent daily digest |
+| GET | `/api/news/latest` | Paginated articles sorted by importance score |
+| GET | `/api/news/search` | Keyword search across title and description |
+| GET | `/api/news/{id}` | Single article with full summary detail |
+| GET | `/api/digest/today` | Today's daily digest |
 | GET | `/api/digest/{date}` | Digest for a specific date |
-| GET | `/api/status` | Ingestion health + last run timestamps |
-| GET | `/api/categories` | Category list with article counts |
+| GET | `/api/status` | Last ingestion time, processed/unprocessed counts |
+
+- **Error handling:** `GlobalExceptionHandler` (`@ControllerAdvice`) handles all exceptions uniformly.
+- **Validation:** Bean Validation annotations (`@NotBlank`, `@NotNull`, `@Size`) on all DTOs.
+- **Logging:** SLF4J throughout — no `System.out.println`.
 
 ---
 
-### 3.6 React Dashboard
+### 4.6 React Dashboard
 
-- **Responsibility:** Displays ranked news, supports category filtering, shows daily digest, displays system status.
-- **Technology:** React 18, TypeScript, Vite, TanStack Query (data fetching/caching), Tailwind CSS.
-- **Architecture:** SPA served from `localhost:5173` in dev, built static assets served by FastAPI or Nginx in production.
+- **Responsibility:** Displays ranked news, supports category filtering and keyword search, shows article detail with full AI summary, shows daily digest.
+- **Technology:** React 18, TypeScript, Vite, Tailwind CSS, Axios (HTTP client).
+- **Architecture:** SPA served from `localhost:5173` in dev; built static assets served by Nginx in production.
 
-**Why TanStack Query:** Handles polling (`refetchInterval`) for live updates and caching cleanly — avoids hand-rolling fetch logic.
+**Why Axios over Fetch:** Consistent interceptor support for error handling and request/response transformation — cleaner than raw fetch for a structured API client layer.
 
 ---
 
-## 4. Data Model
+## 5. Data Model
 
 ```sql
 -- Core article store
 CREATE TABLE articles (
-    id              SERIAL PRIMARY KEY,
-    url             TEXT UNIQUE NOT NULL,
-    title           TEXT,
-    source          TEXT,
-    published_at    TIMESTAMPTZ,
-    raw_content     TEXT,
-    gdelt_tone      FLOAT,
-    gdelt_themes    TEXT[],
-    gdelt_geo       TEXT,
-    summary         TEXT,
-    category        TEXT,
-    rank_score      FLOAT DEFAULT 0,
-    status          TEXT DEFAULT 'pending',  -- pending | processed | failed
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    processed_at    TIMESTAMPTZ
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title            TEXT,
+    url              TEXT UNIQUE NOT NULL,
+    source_name      TEXT,
+    description      TEXT,
+    content          TEXT,
+    category         TEXT,
+    importance_score INTEGER DEFAULT 0,
+    processed        BOOLEAN DEFAULT FALSE,
+    published_at     TIMESTAMPTZ,
+    fetched_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_articles_status     ON articles(status);
-CREATE INDEX idx_articles_rank_score ON articles(rank_score DESC);
-CREATE INDEX idx_articles_published  ON articles(published_at DESC);
-CREATE INDEX idx_articles_category   ON articles(category);
+CREATE INDEX idx_articles_processed      ON articles(processed);
+CREATE INDEX idx_articles_importance     ON articles(importance_score DESC);
+CREATE INDEX idx_articles_published      ON articles(published_at DESC);
+CREATE INDEX idx_articles_category       ON articles(category);
+
+-- AI-generated summaries (separate table, one-to-one with articles)
+CREATE TABLE summaries (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    article_id           UUID NOT NULL REFERENCES articles(id),
+    one_sentence_summary TEXT,
+    key_points           TEXT,
+    why_it_matters       TEXT,
+    ai_category          TEXT,
+    created_at           TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_summaries_article_id ON summaries(article_id);
 
 -- Daily digest store
-CREATE TABLE digests (
-    id          SERIAL PRIMARY KEY,
-    date        DATE UNIQUE NOT NULL,
-    content     TEXT NOT NULL,
-    article_ids INTEGER[],
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE daily_digests (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    digest_date  DATE UNIQUE NOT NULL,
+    content      TEXT NOT NULL,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Ingestion run log
-CREATE TABLE ingestion_log (
-    id              SERIAL PRIMARY KEY,
-    run_at          TIMESTAMPTZ DEFAULT NOW(),
-    articles_found  INTEGER,
-    articles_new    INTEGER,
-    duration_ms     INTEGER,
-    status          TEXT,   -- success | partial | failed
-    error_message   TEXT
-);
+-- Future: pgvector embeddings table (Sprint 6)
+-- CREATE TABLE article_embeddings (
+--     article_id  UUID PRIMARY KEY REFERENCES articles(id),
+--     embedding   vector(768)
+-- );
 ```
+
+**Key design decisions:**
+- UUID PKs on all tables (no serial integers) — portable across environments, safe for future distributed deployment.
+- Summaries in a separate table — keeps `articles` lean and queryable without pulling large text fields.
+- `processed` boolean on `Article` — simpler than a status enum for v1; sufficient for the two-state workflow (unprocessed → processed).
+- `daily_digests` (not `digests`) — explicit name avoids SQL keyword collision.
 
 ---
 
-## 5. Technology Stack
+## 6. Technology Stack
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| Language (backend) | Python 3.12 | Best ecosystem for AI/data work; GDELT libs available |
-| Web framework | FastAPI | Async-native, auto OpenAPI docs, Pydantic integration |
-| ORM | SQLAlchemy 2 (async) | Type-safe, async-first, production-proven |
-| Task scheduling | APScheduler 3 | Lightweight in-process scheduler; no Redis/Celery needed in v1 |
-| Database | PostgreSQL 16 | Reliable, array column support for tags, future AWS RDS compatible |
-| LLM runtime | Ollama | Local, model-agnostic, REST API matches cloud LLM patterns |
-| Default LLM model | Llama 3.2 (3B) | Fast on CPU, good summarization quality at 3B params |
+| Language (backend) | Java 21 | LTS release; virtual threads; mature Spring ecosystem |
+| Web framework | Spring Boot 3 | Industry standard; auto-configuration; built-in scheduling |
+| Build tool | Maven | Dependency management; standard in Java enterprise projects |
+| ORM | Spring Data JPA | Repository pattern out of the box; declarative queries |
+| HTTP client | Spring WebClient | Non-blocking HTTP for Ollama and GDELT calls |
+| Validation | Bean Validation | `@NotBlank`, `@NotNull`, `@Size` — declarative, standard |
+| Boilerplate reduction | Lombok | `@RequiredArgsConstructor`, `@Data`, `@Builder` |
+| Logging | SLF4J + Logback | Standard Java logging; no `System.out.println` |
+| Database | PostgreSQL 16 | Reliable; UUID support; future pgvector extension |
+| LLM runtime | Ollama | Local, model-agnostic REST API |
+| Default LLM model | Llama 3.1 | Good summarization quality; configurable |
+| Future LLM | Claude API / OpenAI API | Drop-in replacement via `OllamaClient` abstraction |
 | Frontend framework | React 18 + TypeScript | Industry standard; strong ecosystem |
-| Build tool | Vite | Fast HMR, simple config |
-| UI/Styling | Tailwind CSS | Utility-first, no design system overhead in v1 |
-| Data fetching | TanStack Query | Caching + polling built-in |
+| Build tool (frontend) | Vite | Fast HMR; simple config |
+| UI/Styling | Tailwind CSS | Utility-first; no design system overhead in v1 |
+| HTTP client (frontend) | Axios | Consistent error handling; interceptor support |
 | Containerization | Docker + docker-compose | Single-command local run; maps directly to ECS in v2 |
+| Future: semantic search | pgvector | Vector similarity search within PostgreSQL |
 
 ---
 
-## 6. Data Flow
+## 7. Data Flow
 
 ```
-[GDELT API] ──HTTP poll──▶ [Collector] ──INSERT──▶ [articles: status=pending]
-                                                              │
-                              [AI Processor] ──SELECT pending─┘
-                                    │
-                                    ├──POST /api/generate──▶ [Ollama]
-                                    │                            │
-                                    │◀───── {summary, category} ─┘
-                                    │
-                                    └──UPDATE articles SET summary, category,
-                                                rank_score, status='processed'
+[GDELT API] ──HTTP──▶ [GdeltClient] ──▶ [NewsIngestionService]
+                                                  │
+                                         INSERT articles
+                                         (processed=false)
+                                                  │
+[AiProcessorScheduler every 2min] ──SELECT unprocessed──▶ [PostgreSQL]
+        │
+        ▼
+[OllamaClient POST /api/generate]
+        │
+        ▼
+{oneSentenceSummary, keyPoints, whyItMatters, aiCategory, importanceScore}
+        │
+        ▼
+[SummaryService] ──INSERT summaries
+                ──UPDATE articles SET processed=true, importance_score=N
 
-[React UI] ──GET /api/articles──▶ [FastAPI] ──SELECT processed──▶ [PostgreSQL]
-                                       │◀──────── ranked results ──────────────┘
-                                       │
-                                  [JSON response] ──▶ [React renders cards]
+[React UI] ──GET /api/news/latest──▶ [NewsController]
+                                           │
+                                    [NewsService]
+                                           │
+                                    [ArticleRepository]
+                                           │
+                              SELECT + JOIN summaries ORDER BY importance_score
+                                           │
+                              [ArticleMapper: Entity → DTO]
+                                           │
+                              [JSON response] ──▶ [React renders cards]
 
-[07:00 cron] ──▶ [Digest Generator] ──SELECT top-N──▶ [PostgreSQL]
-                         │──POST /api/generate──▶ [Ollama]
-                         └──INSERT INTO digests──▶ [PostgreSQL]
+[DigestScheduler 07:00] ──▶ [DigestService] ──SELECT top-N──▶ [PostgreSQL]
+                                   │──▶ [OllamaClient] ──▶ narrative digest
+                                   └──INSERT daily_digests──▶ [PostgreSQL]
 ```
 
 ---
 
-## 7. AWS Migration Path (v2)
+## 8. AWS Migration Path (v2)
 
 | v1 Component | AWS Equivalent |
 |-------------|----------------|
-| PostgreSQL (local) | Amazon RDS (PostgreSQL) |
-| Ollama (local) | Amazon Bedrock (Claude Haiku / Titan) or EC2 GPU instance with Ollama |
-| APScheduler (in-process) | Amazon EventBridge Scheduler + ECS Tasks |
-| FastAPI (local) | ECS Fargate (behind ALB) |
+| PostgreSQL (local container) | Amazon RDS (PostgreSQL) |
+| Ollama (local) | EC2 GPU instance with Ollama, or Claude API / Bedrock |
+| Spring `@Scheduled` | Amazon EventBridge Scheduler + ECS Tasks |
+| Spring Boot (local container) | ECS Fargate (behind ALB) |
 | React SPA (local) | S3 + CloudFront |
 | docker-compose | ECS Task Definitions |
-| Environment variables | AWS Systems Manager Parameter Store / Secrets Manager |
+| `.env` file | AWS Secrets Manager / Parameter Store |
+| Email digest (local log) | Amazon SES |
 
-The internal service boundaries defined in v1 map directly to ECS services in v2. No code rewrites required — only infrastructure changes.
+The Clean Architecture layer boundaries defined in v1 map directly to ECS services in v2. Service interfaces remain unchanged — only infrastructure wiring changes.
 
 ---
 
-## 8. Security Considerations (v1)
+## 9. Security Considerations (v1)
 
 - Dashboard runs on localhost only; no public exposure in v1.
 - No credentials stored in code; all via `.env` file (gitignored).
-- Ollama is bound to localhost only.
+- Ollama bound to localhost only.
 - PostgreSQL accessible only within the Docker network.
 - GDELT is a public read-only API; no API key required.
 
 ---
 
-## 9. Open Architecture Decisions
+## 10. Open Architecture Decisions
 
 | Decision | Options | Current Choice | Revisit When |
 |----------|---------|---------------|--------------|
-| LLM model | Llama 3.2 3B / 8B, Mistral 7B | Llama 3.2 3B (speed) | GPU available → 8B |
+| LLM model | Llama 3.1, Mistral 7B, Gemma | Llama 3.1 | Quality issues arise |
+| Importance scoring | AI-generated vs. formula | AI-generated (Sprint 3) | After 2 weeks of data |
 | Summary prompt strategy | One-shot vs. chain-of-thought | One-shot (speed) | Quality issues arise |
-| Ranking weights | Adjust formula coefficients | 40/40/20 | After 2 weeks of data |
-| Async processing | Sequential vs. concurrent | Sequential | GPU acceleration |
+| Future AI provider | Claude API vs. OpenAI | Defer to Sprint 3+ | When Ollama quality insufficient |
+| Semantic search | pgvector vs. Elasticsearch | pgvector (Sprint 6) | Scale exceeds single-node PG |

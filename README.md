@@ -1,6 +1,6 @@
 # AI News Intelligence Assistant
 
-A self-hosted news aggregation and intelligence platform. Collects global news from GDELT, enriches each article with AI-generated summaries and categories using a local LLM (Ollama), ranks stories by relevance, and surfaces everything through a React dashboard with a daily digest.
+A self-hosted AI-powered news aggregation and intelligence platform. Collects global news from GDELT, enriches each article with AI-generated summaries, key points, importance scores, and categories using a local LLM (Ollama), and surfaces everything through a React dashboard with a daily digest.
 
 No external AI APIs. No subscriptions. Full control.
 
@@ -9,11 +9,14 @@ No external AI APIs. No subscriptions. Full control.
 ## What It Does
 
 - **Collects** news events from [GDELT 2.0](https://www.gdeltproject.org/) every 15 minutes
-- **Summarizes** each article using a local Ollama LLM (Llama 3.2 by default)
-- **Categorizes** articles into 8 topic domains (Politics, Tech, Economy, etc.)
-- **Ranks** articles by a composite score: tone + recency + source diversity
-- **Displays** everything in a React dashboard with category filtering
-- **Generates** a daily morning digest of the top 10 stories
+- **Summarizes** each article using a local Ollama LLM (Llama 3.1 by default)
+- **Explains** key points and why each story matters
+- **Categorizes** articles into 8 topic domains (AI, Tech, Economy, Cybersecurity, etc.)
+- **Scores** articles by AI-assessed importance (1–100)
+- **Displays** everything in a React dashboard with category filtering and search
+- **Generates** a daily morning digest grouped by category
+- **Searches** news history semantically via pgvector (Sprint 6)
+- **Delivers** email digests and breaking news alerts via AWS SES (Sprint 7)
 
 ---
 
@@ -21,19 +24,21 @@ No external AI APIs. No subscriptions. Full control.
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2 (async) |
-| Scheduling | APScheduler 3 |
-| Database | PostgreSQL 16 |
-| LLM | Ollama (Llama 3.2 3B default) |
-| Frontend | React 18, TypeScript, Vite, Tailwind CSS, TanStack Query |
+| Backend | Java 21, Spring Boot 3, Maven |
+| ORM | Spring Data JPA |
+| Scheduling | Spring `@Scheduled` |
+| Database | PostgreSQL 16 (+ pgvector in Sprint 6) |
+| LLM | Ollama (Llama 3.1 default) |
+| Future LLM | Claude API / OpenAI API |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, Axios |
 | Containers | Docker + docker-compose |
-| Cloud (v2) | AWS ECS, RDS, S3, CloudFront, EventBridge |
+| Cloud (v2) | AWS EC2, RDS, S3, CloudFront, SES, EventBridge |
 
 ---
 
 ## Quick Start
 
-> Prerequisites: Docker, docker-compose, [Ollama](https://ollama.com) installed and running locally with `llama3.2:3b` pulled.
+> Prerequisites: Docker, docker-compose, [Ollama](https://ollama.com) installed and running locally with `llama3.1` pulled.
 
 ```bash
 # 1. Clone and enter the project
@@ -58,30 +63,32 @@ The backend starts at `http://localhost:8000`. API docs at `http://localhost:800
 
 ```
 ai-news-intelligence-assistant/
-├── backend/                  # Python FastAPI application
-│   ├── app/
-│   │   ├── api/              # FastAPI route handlers
-│   │   ├── services/         # Collector, AI Processor, Digest Generator
-│   │   ├── models/           # SQLAlchemy models
-│   │   ├── schemas/          # Pydantic schemas
-│   │   └── core/             # Config, scheduler, database
-│   ├── migrations/           # Alembic migrations
-│   └── Dockerfile
-├── frontend/                 # React + TypeScript application
-│   ├── src/
-│   │   ├── pages/
-│   │   ├── components/
-│   │   ├── hooks/
-│   │   └── api/
-│   └── Dockerfile
+├── backend/                          # Java 21 + Spring Boot 3 application
+│   └── src/main/java/com/mesgan/ainews/
+│       ├── controller/               # REST controllers
+│       ├── service/                  # Business logic
+│       ├── repository/               # Spring Data JPA repositories
+│       ├── entity/                   # JPA entities
+│       ├── dto/                      # Request / response DTOs
+│       ├── mapper/                   # Entity ↔ DTO mappers
+│       ├── client/                   # GDELT + Ollama HTTP clients
+│       ├── scheduler/                # @Scheduled job classes
+│       ├── config/                   # Spring configuration
+│       └── exception/                # GlobalExceptionHandler + custom exceptions
+├── frontend/                         # React + TypeScript application
+│   └── src/
+│       ├── pages/
+│       ├── components/
+│       └── api/
 ├── docs/
 │   ├── requirements/
-│   │   └── project-vision.md       # Goals, requirements, user stories
+│   │   └── project-vision.md        # Goals, requirements, user stories
 │   ├── architecture/
-│   │   └── system-overview.md      # Architecture, data model, tech decisions
+│   │   └── system-overview.md       # Architecture, data model, tech decisions
 │   └── sprints/
-│       └── sprint-plan.md          # 5-sprint delivery plan
-├── infra/                    # AWS infrastructure (Sprint 5)
+│       └── sprint-plan.md           # 8-sprint delivery plan
+├── infra/                            # AWS infrastructure (Sprint 8)
+├── CLAUDE.md                         # AI coding assistant instructions
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -102,12 +109,14 @@ ai-news-intelligence-assistant/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL connection string |
+| `DB_URL` | `jdbc:postgresql://db:5432/ainews` | PostgreSQL JDBC connection URL |
+| `DB_USERNAME` | `ainews` | PostgreSQL username |
+| `DB_PASSWORD` | — | PostgreSQL password |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
-| `OLLAMA_MODEL` | `llama3.2:3b` | Model name to use for summarization |
-| `COLLECT_INTERVAL_MINUTES` | `15` | GDELT polling interval |
-| `PROCESS_BATCH_SIZE` | `10` | Articles processed per AI cycle |
-| `DIGEST_HOUR` | `7` | Hour (local time) to generate daily digest |
+| `OLLAMA_MODEL` | `llama3.1` | Model name to use for summarization |
+| `GDELT_COLLECT_INTERVAL_MS` | `900000` | GDELT polling interval (ms) |
+| `AI_PROCESS_BATCH_SIZE` | `10` | Articles processed per AI cycle |
+| `DIGEST_CRON` | `0 0 7 * * *` | Cron expression for daily digest |
 | `DIGEST_TOP_N` | `10` | Number of articles in daily digest |
 
 ---
@@ -116,11 +125,14 @@ ai-news-intelligence-assistant/
 
 | Sprint | Status | Deliverable |
 |--------|--------|-------------|
-| Sprint 1 — Foundation & Data Ingestion | Not started | GDELT → PostgreSQL |
-| Sprint 2 — AI Summarization & Ranking | Not started | Ollama enrichment |
-| Sprint 3 — REST API & Dashboard | Not started | React UI live |
-| Sprint 4 — Digest & Polish | Not started | Production-local |
-| Sprint 5 — AWS Deployment | Not started | Cloud deployment |
+| Sprint 1 — Backend Foundation | Not started | Spring Boot + PostgreSQL, all layers wired |
+| Sprint 2 — News Ingestion | Not started | GDELT → PostgreSQL pipeline |
+| Sprint 3 — AI Summaries | Not started | Ollama summaries + importance scores |
+| Sprint 4 — Frontend Dashboard | Not started | React UI live |
+| Sprint 5 — Daily Digest | Not started | Automated morning digest |
+| Sprint 6 — Semantic Search | Not started | pgvector search + Q&A |
+| Sprint 7 — Notifications | Not started | Email digest + breaking news alerts |
+| Sprint 8 — AWS Migration | Not started | Full stack on AWS |
 
 ---
 
