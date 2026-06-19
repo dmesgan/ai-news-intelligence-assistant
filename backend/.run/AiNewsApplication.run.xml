@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="AiNewsApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+    <module name="ai-news" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.mesgan.ainews.AiNewsApplication" />
+    <option name="ACTIVE_PROFILES" value="local" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

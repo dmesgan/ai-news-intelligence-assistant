@@ -67,3 +67,94 @@ com.mesgan.ainews
 - DTOs always returned from controllers — entities never exposed directly
 
 ---
+
+## 2026-06-19
+
+### What was done
+- Generated all Sprint 1 backend code — 26 files created.
+- `backend/pom.xml` — Spring Boot 3.3.4, Java 21, dependencies: Web, Data JPA, Validation, PostgreSQL driver, Lombok.
+- Entities: `Article`, `Summary`, `DailyDigest` — UUID PKs via `@GeneratedValue(strategy = GenerationType.UUID)`, `@Builder.Default` for field defaults, Lombok `@Data/@Builder`.
+- Repositories: `ArticleRepository`, `SummaryRepository`, `DailyDigestRepository` — extend `JpaRepository`, custom derived queries (`existsByUrl`, `countByProcessedTrue/False`, `findByArticleId`, `findByDigestDate`) plus JPQL `@Query` for keyword search.
+- DTOs: Java records (`ArticleResponse`, `ArticleDetailResponse`, `DigestResponse`, `StatusResponse`) — immutable, no boilerplate.
+- Mappers: `ArticleMapper`, `DigestMapper` — plain `@Component` classes, accept entity + optional Summary, return records. Summary fields null-safe.
+- Services: `NewsService`, `DigestService` — `@Transactional(readOnly = true)`, `@RequiredArgsConstructor`, `@Slf4j`. No business logic leaked to controllers.
+- Controllers: `NewsController` (`/api/news/latest`, `/api/news/search`, `/api/news/{id}`), `DigestController` (`/api/digest/today`, `/api/digest/{date}`), `StatusController` (`/api/health`, `/api/status`).
+- Exception: `ResourceNotFoundException` → 404, `MethodArgumentNotValidException` → 400, catch-all → 500. All via `GlobalExceptionHandler` (`@RestControllerAdvice`).
+- `WebConfig` — CORS for `localhost:5173` and `localhost:3000`.
+- `schema.sql` — creates `articles`, `summaries`, `daily_digests` tables with `IF NOT EXISTS` guards and all indexes.
+- `application.yml` — all config via env vars with defaults, `ddl-auto=validate`, `sql.init.mode=always`.
+- `Dockerfile` — multi-stage build (Maven builder + JRE runtime).
+- `docker-compose.yml` — `db` (PostgreSQL 16) + `backend` services, health check on db.
+- `.env.example` — all required environment variables.
+
+### Current state
+- Sprint 1 complete. All backend layers implemented. No data in DB yet.
+- To test: `docker-compose up` → insert a row manually in `articles` → `GET /api/news/latest` returns it as DTO.
+- `GET /api/health` → `{"status":"UP"}`
+- `GET /api/status` → article counts
+- `GET /api/news/{bad-uuid}` → `{"status":404,"message":"...","timestamp":"..."}`
+
+### Current sprint
+**Sprint 2 — News Ingestion** (not started)
+
+Next steps:
+- Add `WebClient` dependency to `pom.xml`
+- Implement `GdeltClient` — HTTP call to GDELT 2.0, CSV parsing
+- Implement `NewsIngestionService` — deduplication by URL, batch insert
+- Implement `GdeltCollectorScheduler` with `@Scheduled`
+- Add `POST /api/admin/trigger-ingest` manual trigger endpoint
+
+### Key design decisions
+- `Summary.articleId` is a plain `UUID` column (not a JPA `@OneToOne`) — matches CLAUDE.md spec, avoids lazy-loading complexity
+- Services call `summaryRepository.findByArticleId()` per article in list view — acceptable in Sprint 1 (no summaries exist yet); optimize with JOIN in Sprint 3
+- `@RestControllerAdvice` used (not `@ControllerAdvice`) — combines advice + `@ResponseBody`, correct for REST APIs
+- Java records for DTOs — immutable, Jackson serializes them automatically
+
+---
+
+## 2026-06-19 (continued — tests, IntelliJ setup, app verified running)
+
+### What was done
+- Added 38 test cases across 8 test classes: `NewsServiceTest` (7), `DigestServiceTest` (4), `ArticleMapperTest` (4), `DigestMapperTest` (1), `NewsControllerTest` (5), `DigestControllerTest` (4), `StatusControllerTest` (3), `ArticleRepositoryTest` (7), `AiNewsApplicationTests` (1).
+- Added H2 dependency to `pom.xml` (test scope) for in-memory database in repository and context load tests.
+- Fixed test failure: `ArticleRepositoryTest` was failing with `SchemaManagementException: missing table [articles]` because `application.yml` sets `ddl-auto=validate` which conflicts with H2 (no tables). Fix: added `spring.jpa.hibernate.ddl-auto=create-drop` to `@TestPropertySource` so Hibernate creates tables from entities.
+- Fixed `application.yml`: removed hardcoded `hibernate.dialect: PostgreSQLDialect` — Hibernate 6 auto-detects the dialect; having it explicit broke H2 tests.
+- Set up IntelliJ run configuration: `backend/.run/AiNewsApplication.run.xml` activates the `local` Spring profile.
+- Created `application-local.yml` — local profile with `localhost:5432`, SQL logging enabled.
+- Added Maven wrapper: `mvnw`, `mvnw.cmd`, `.mvn/wrapper/maven-wrapper.properties` (Maven 3.9.9).
+- Added `AiNewsApplicationTests.java` — context load smoke test using H2.
+- Updated `.gitignore` to exclude `backend/target/`, `out/` (IntelliJ build output), `.env`.
+- Verified the app builds and runs:
+  - `./mvnw clean compile` → BUILD SUCCESS (22 source files)
+  - `./mvnw test` → 38 tests, 0 failures
+  - `docker-compose up --build` → both `db` and `backend` containers running
+  - `GET /api/health` → `{"status":"UP"}`
+  - `GET /api/status` → `{"totalArticles":0,...}`
+  - Manual article insert → `GET /api/news/latest` returns article as JSON
+  - `GET /api/news/search?keyword=Spring` → returns matching article
+  - `GET /api/news/{id}` → full detail response
+  - `GET /api/news/00000000-...` → `{"status":404,...}`
+
+### Current state
+- Sprint 1 **complete and verified**.
+- App runs from IntelliJ: `docker-compose up db` for database, then run `AiNewsApplication` with profile `local`.
+- App runs from Docker: `docker-compose up --build` (starts both db + backend on port 8080).
+- All 38 tests pass: `./mvnw test`
+- **Port conflict note:** Do not run IntelliJ and `docker-compose up` (full) at the same time — both bind port 8080. Use `docker-compose up db` when running from IntelliJ.
+
+### Current sprint
+**Sprint 2 — News Ingestion** (not started)
+
+Next steps:
+- Add `spring-boot-starter-webflux` to `pom.xml` for `WebClient`
+- Implement `GdeltClient` — HTTP call to GDELT 2.0, CSV parsing
+- Implement `NewsIngestionService` — deduplication by URL, batch insert
+- Implement `GdeltCollectorScheduler` with `@Scheduled`
+- Add `POST /api/admin/trigger-ingest` manual trigger endpoint
+
+### Bugs fixed
+- `hibernate.dialect` in `application.yml` caused H2 test failures — removed (Hibernate 6 auto-detects)
+- `ddl-auto=validate` with H2 (no tables) caused context load failure — fixed with `create-drop` in test `@TestPropertySource`
+- Port 8080 conflict when running IntelliJ + full docker-compose simultaneously — resolved by using `docker-compose up db` only
+
+---

@@ -1,0 +1,21 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ainews}
+    username: ${DB_USERNAME:ainews}
+    password: ${DB_PASSWORD:ainews}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  sql:
+    init:
+      mode: always
+
+server:
+  port: ${SERVER_PORT:8080}
+
+logging:
+  level:
+    com.mesgan.ainews: INFO
+    org.hibernate.SQL: WARN

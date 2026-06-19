@@ -4,3 +4,10 @@
 # Claude Code instructions
 CLAUDE.md
 prompt.md
+
+# Build artifacts
+backend/target/
+out/
+
+# Environment
+.env
