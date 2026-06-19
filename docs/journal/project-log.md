@@ -158,3 +158,49 @@ Next steps:
 - Port 8080 conflict when running IntelliJ + full docker-compose simultaneously — resolved by using `docker-compose up db` only
 
 ---
+
+## 2026-06-19 (Sprint 2 — GDELT News Ingestion)
+
+### What was done
+- Added `spring-boot-starter-webflux` to `pom.xml` — provides `WebClient` for HTTP calls.
+- `config/WebClientConfig.java` — `@Bean` WebClient with 50MB buffer for GDELT ZIP downloads.
+- `config/SchedulingConfig.java` — `@EnableScheduling` to activate `@Scheduled` jobs.
+- `client/GdeltClient.java` — fetches `lastupdate.txt`, identifies latest GKG ZIP URL, downloads and unzips in memory, parses tab-separated GKG v2 format, returns `List<GdeltArticleDto>`.
+- `dto/GdeltArticleDto.java` — internal record (url, sourceName, themes, tone, publishedAt). Never returned to API clients.
+- `dto/IngestionResultDto.java` — API response record (articlesFound, articlesNew, articlesDuplicate, durationMs, status).
+- `service/NewsIngestionService.java` — deduplicates by URL (`existsByUrl`), maps GDELT themes → category taxonomy, batch-saves new articles, returns stats.
+- `scheduler/GdeltCollectorScheduler.java` — `@Scheduled(fixedDelay)` runs `ingestLatest()` every 15 minutes. Fixed delay prevents overlap.
+- `controller/NewsController.java` — added `POST /api/news/fetch` manual trigger endpoint.
+- `application.yml` + `application-local.yml` — added `gdelt.collect-interval-ms` config.
+- Fixed `NewsControllerTest` — added `@MockBean NewsIngestionService` after adding it to the controller.
+
+### GDELT integration details
+- Source file: `http://data.gdeltproject.org/gdeltv2/lastupdate.txt` → line 3 = GKG ZIP URL
+- GKG v2 fields used: index 1 (DATE), 3 (SourceCommonName), 4 (DocumentIdentifier/URL), 8 (V2Themes), 15 (V21Tone)
+- Category mapped from themes prefix matching (ECON_ → Economy, CYBER → Cybersecurity, etc.)
+- Title/description = null in Sprint 2; Ollama will generate them in Sprint 3
+- `POST /api/news/fetch` — no request body, returns ingestion stats JSON
+
+### Current state
+- Sprint 2 complete.
+- `POST /api/news/fetch` → triggers live GDELT ingestion, returns `{articlesFound, articlesNew, articlesDuplicate, durationMs, status}`
+- `GET /api/news/latest` → returns real GDELT articles from DB
+- Scheduler runs automatically every 15 minutes once app starts
+- All 38 tests pass: `./mvnw test`
+
+### Current sprint
+**Sprint 3 — AI Summaries** (not started)
+
+Next steps:
+- Add Ollama client (`OllamaClient`) using WebClient
+- Implement `SummaryService` — calls Ollama with article URL, stores result in `summaries` table
+- Implement `AiProcessorScheduler` — picks up `processed=false` articles in batches
+- Update `GET /api/news/latest` and `GET /api/news/{id}` to include summary fields
+
+### Key design decisions
+- `fixedDelay` (not `fixedRate`) for scheduler — next run starts 15 min AFTER previous completes, preventing overlap on slow networks
+- GKG file used over export.CSV — GKG is article-level (one row = one document); export.CSV is event-level
+- `WebClient.block()` is acceptable here — runs on scheduler thread (not a reactive pipeline)
+- `@MockBean NewsIngestionService` needed in `NewsControllerTest` — any new dependency added to a controller must be mocked in its `@WebMvcTest` test class
+
+---

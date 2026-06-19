@@ -15,6 +15,9 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
 
+gdelt:
+  collect-interval-ms: ${GDELT_COLLECT_INTERVAL_MS:900000}
+
 logging:
   level:
     com.mesgan.ainews: INFO

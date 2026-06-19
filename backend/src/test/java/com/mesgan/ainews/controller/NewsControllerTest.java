@@ -3,6 +3,7 @@ package com.mesgan.ainews.controller;
 import com.mesgan.ainews.dto.ArticleDetailResponse;
 import com.mesgan.ainews.dto.ArticleResponse;
 import com.mesgan.ainews.exception.ResourceNotFoundException;
+import com.mesgan.ainews.service.NewsIngestionService;
 import com.mesgan.ainews.service.NewsService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +26,7 @@ class NewsControllerTest {
 
     @Autowired MockMvc mockMvc;
     @MockBean NewsService newsService;
+    @MockBean NewsIngestionService newsIngestionService;
 
     @Test
     void getLatestArticles_returnsOkWithPageContent() throws Exception {

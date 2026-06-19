@@ -9,6 +9,9 @@ spring:
       hibernate:
         format_sql: true
 
+gdelt:
+  collect-interval-ms: 900000
+
 logging:
   level:
     com.mesgan.ainews: DEBUG

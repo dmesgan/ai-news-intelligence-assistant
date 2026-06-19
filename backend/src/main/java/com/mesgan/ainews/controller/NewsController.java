@@ -2,6 +2,8 @@ package com.mesgan.ainews.controller;
 
 import com.mesgan.ainews.dto.ArticleDetailResponse;
 import com.mesgan.ainews.dto.ArticleResponse;
+import com.mesgan.ainews.dto.IngestionResultDto;
+import com.mesgan.ainews.service.NewsIngestionService;
 import com.mesgan.ainews.service.NewsService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -16,6 +18,12 @@ import java.util.UUID;
 public class NewsController {
 
     private final NewsService newsService;
+    private final NewsIngestionService newsIngestionService;
+
+    @PostMapping("/fetch")
+    public ResponseEntity<IngestionResultDto> fetchLatestNews() {
+        return ResponseEntity.ok(newsIngestionService.ingestLatest());
+    }
 
     @GetMapping("/latest")
     public ResponseEntity<Page<ArticleResponse>> getLatestArticles(
