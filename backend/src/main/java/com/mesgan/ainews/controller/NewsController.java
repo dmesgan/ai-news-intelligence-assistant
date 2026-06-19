@@ -3,8 +3,10 @@ package com.mesgan.ainews.controller;
 import com.mesgan.ainews.dto.ArticleDetailResponse;
 import com.mesgan.ainews.dto.ArticleResponse;
 import com.mesgan.ainews.dto.IngestionResultDto;
+import com.mesgan.ainews.dto.ProcessingResultDto;
 import com.mesgan.ainews.service.NewsIngestionService;
 import com.mesgan.ainews.service.NewsService;
+import com.mesgan.ainews.service.SummaryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
@@ -19,10 +21,17 @@ public class NewsController {
 
     private final NewsService newsService;
     private final NewsIngestionService newsIngestionService;
+    private final SummaryService summaryService;
 
     @PostMapping("/fetch")
     public ResponseEntity<IngestionResultDto> fetchLatestNews() {
         return ResponseEntity.ok(newsIngestionService.ingestLatest());
+    }
+
+    @PostMapping("/process")
+    public ResponseEntity<ProcessingResultDto> processArticles(
+            @RequestParam(defaultValue = "10") int batchSize) {
+        return ResponseEntity.ok(summaryService.processUnprocessedArticles(batchSize));
     }
 
     @GetMapping("/latest")

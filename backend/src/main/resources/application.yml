@@ -18,6 +18,10 @@ server:
 gdelt:
   collect-interval-ms: ${GDELT_COLLECT_INTERVAL_MS:900000}
 
+ollama:
+  base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+  model: ${OLLAMA_MODEL:llama3.1}
+
 logging:
   level:
     com.mesgan.ainews: INFO

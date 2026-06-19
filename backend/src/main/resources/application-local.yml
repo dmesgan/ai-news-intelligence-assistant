@@ -12,6 +12,10 @@ spring:
 gdelt:
   collect-interval-ms: 900000
 
+ollama:
+  base-url: http://localhost:11434
+  model: llama3.1
+
 logging:
   level:
     com.mesgan.ainews: DEBUG

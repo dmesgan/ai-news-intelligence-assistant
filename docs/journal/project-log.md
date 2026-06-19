@@ -204,3 +204,48 @@ Next steps:
 - `@MockBean NewsIngestionService` needed in `NewsControllerTest` — any new dependency added to a controller must be mocked in its `@WebMvcTest` test class
 
 ---
+
+## 2026-06-19 (Sprint 3 — AI Summaries with Ollama)
+
+### What was done
+- `config/OllamaProperties.java` — `@ConfigurationProperties(prefix="ollama")` binding baseUrl + model from environment.
+- `dto/OllamaGenerateRequest.java` — request record: `{model, prompt, stream: false}`.
+- `dto/OllamaGenerateResponse.java` — response record: `{model, response, done}`.
+- `dto/AiSummaryDto.java` — parsed LLM output: title, oneSentenceSummary, keyPoints, whyItMatters, aiCategory, importanceScore. `@JsonIgnoreProperties` tolerates unexpected model fields.
+- `dto/ProcessingResultDto.java` — API response: articlesProcessed, articlesFailed, durationMs, status.
+- `client/OllamaClient.java` — WebClient POST to `/api/generate`, `stream=false`, 90s timeout, 3 retries with exponential backoff (1s, 2s).
+- `service/PromptBuilderService.java` — builds structured prompt using article URL, sourceName, category. Instructs model to return valid JSON only.
+- `service/SummaryService.java` — fetches `processed=false` articles in batches, calls Ollama, extracts JSON from raw response, validates aiCategory against taxonomy, clamps importanceScore to [1,100], saves Summary, updates Article (title, category, importanceScore, processed=true). Idempotency check prevents duplicate summaries on retry.
+- `scheduler/AiProcessorScheduler.java` — `@Scheduled(fixedDelay=120_000)`, processes 10 articles per cycle.
+- Fixed N+1 in `NewsIngestionService` — replaced per-article `existsByUrl()` with `findAllUrls()` (one query for all existing URLs).
+- `ArticleRepository` — added `findByProcessedFalse(Pageable)` and `findAllUrls()`.
+- `NewsController` — added `POST /api/news/process?batchSize=10`.
+- `NewsControllerTest` — added `@MockBean SummaryService`.
+- `application.yml` + `application-local.yml` — added `ollama.base-url` and `ollama.model`.
+
+### Current state
+- Sprint 3 complete. 38 tests pass.
+- Ollama must be running locally: `ollama serve` + `ollama pull llama3.1`
+- Check Ollama: `curl http://localhost:11434` → "Ollama is running"
+- Trigger AI processing: `POST /api/news/process` → returns `{articlesProcessed, articlesFailed, durationMs, status}`
+- Articles gain: `title`, refined `category`, `importanceScore` (1-100), and a linked `Summary` row
+- Scheduler auto-processes 10 articles every 2 minutes after app startup
+- `GET /api/news/latest` now returns articles with `oneSentenceSummary` populated
+
+### Current sprint
+**Sprint 4 — React Frontend Dashboard** (not started)
+
+Next steps:
+- `npm create vite@latest frontend -- --template react-ts`
+- Install: Tailwind CSS, Axios, react-router-dom
+- Pages: NewsFeedPage, ArticleDetailPage, DigestPage
+- Components: ArticleCard, CategoryFilter, SearchBar, StatusBar
+
+### Key design decisions
+- `stream: false` in Ollama request — without it, the response is newline-delimited JSON events, not a single JSON object; `bodyToMono` would fail
+- Idempotency in `SummaryService.processOne()` — checks `summaryRepository.findByArticleId()` before processing; handles app restart mid-cycle without duplicate summaries
+- JSON extraction with `extractJson()` — LLMs often add prose before/after the JSON block; substring from first `{` to last `}` handles this reliably
+- `@ConfigurationProperties` + `@Component` on `OllamaProperties` — keeps `@Value` out of service classes, all config in one place, fully testable
+- `@MockBean SummaryService` added to `NewsControllerTest` — required every time a new service is injected into a controller
+
+---

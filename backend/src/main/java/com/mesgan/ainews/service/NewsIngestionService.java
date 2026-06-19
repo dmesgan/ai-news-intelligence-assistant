@@ -12,7 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -30,9 +32,12 @@ public class NewsIngestionService {
         List<GdeltArticleDto> fetched = gdeltClient.fetchLatestArticles();
         int found = fetched.size();
 
+        // Load all existing URLs in one query instead of one query per article
+        Set<String> existingUrls = new HashSet<>(articleRepository.findAllUrls());
+
         List<Article> toSave = new ArrayList<>();
         for (GdeltArticleDto dto : fetched) {
-            if (!articleRepository.existsByUrl(dto.url())) {
+            if (!existingUrls.contains(dto.url())) {
                 toSave.add(toArticle(dto));
             }
         }
